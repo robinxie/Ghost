@@ -1,6 +1,6 @@
 [submodule "content/themes/casper"]
 	path = content/themes/casper
 	url = git://github.com/TryGhost/Casper.git
-[submodule "ghost-theme"]
-	path = ghost-theme
-	url = git@github.com:robinxie/ghost-theme.git
+[submodule "content/themes/ghost-theme"]
+	path = content/themes/ghost-theme
+	url = git://github.com/robinxie/ghost-theme.git
