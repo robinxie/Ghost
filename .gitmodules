@@ -3,7 +3,7 @@
 	url = git://github.com/TryGhost/Casper.git
 [submodule "content/themes/ghost-theme"]
 	path = content/themes/ghost-theme
-	url = git://github.com/robinxie/ghost-theme.git
+	url = git://github.com:robinxie/ghost-theme.git
 [submodule "content/themes/ghostium"]
 	path = content/themes/ghostium
-	url = git@github.com/robinxie/ghostium.git
+	url = git@github.com:robinxie/ghostium.git
