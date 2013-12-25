@@ -65,3 +65,5 @@ config.js
 coverage.html
 
 /.idea
+
+/content/themes/.DS_Store
