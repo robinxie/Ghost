@@ -18,7 +18,11 @@ var middleware = require('./middleware'),
     BSStore     = require('../bookshelf-session'),
     models      = require('../models'),
 
-    expressServer;
+    expressServer,
+    ONE_HOUR_S  = 60 * 60,
+    ONE_YEAR_S  = 365 * 24 * ONE_HOUR_S,
+    ONE_HOUR_MS = ONE_HOUR_S * 1000,
+    ONE_YEAR_MS = 365 * 24 * ONE_HOUR_MS;
 
 // ##Custom Middleware
 
@@ -29,9 +33,8 @@ function ghostLocals(req, res, next) {
     // Make sure we have a locals value.
     res.locals = res.locals || {};
     res.locals.version = packageInfo.version;
-    res.locals.path = req.path;
-    // Strip off the subdir part of the path
-    res.locals.ghostRoot = req.path.replace(config.paths().webroot, '');
+    // relative path from the URL, not including subdir
+    res.locals.relativeUrl = req.path.replace(config.paths().subdir, '');
 
     if (res.isAdmin) {
         res.locals.csrfToken = req.csrfToken();
@@ -89,7 +92,7 @@ function initViews(req, res, next) {
 function activateTheme(activeTheme) {
     var hbsOptions,
         stackLocation = _.indexOf(expressServer.stack, _.find(expressServer.stack, function (stackItem) {
-            return stackItem.route === '' && stackItem.handle.name === 'settingEnabled';
+            return stackItem.route === config.paths().subdir && stackItem.handle.name === 'settingEnabled';
         }));
 
     // clear the view cache
@@ -110,19 +113,14 @@ function activateTheme(activeTheme) {
     expressServer.set('theme view engine', hbs.express3(hbsOptions));
 
     // Update user error template
-    errors.updateActiveTheme(activeTheme);
+    errors.updateActiveTheme(activeTheme, config.paths().availableThemes[activeTheme].hasOwnProperty('error'));
 }
 
  // ### ManageAdminAndTheme Middleware
 // Uses the URL to detect whether this response should be an admin response
 // This is used to ensure the right content is served, and is not for security purposes
 function manageAdminAndTheme(req, res, next) {
-    // TODO improve this regex
-    if (config.paths().path === '/') {
-        res.isAdmin = /(^\/ghost\/)/.test(req.url);
-    } else {
-        res.isAdmin = new RegExp("^\\" + config.paths().path + "\\/ghost\\/").test(req.url);
-    }
+    res.isAdmin = req.url.lastIndexOf(config.paths().subdir + '/ghost/', 0) === 0;
 
     if (res.isAdmin) {
         expressServer.enable('admin');
@@ -150,11 +148,10 @@ function manageAdminAndTheme(req, res, next) {
 
 // Redirect to signup if no users are currently created
 function redirectToSignup(req, res, next) {
-    var root = config.paths().webroot;
     /*jslint unparam:true*/
     api.users.browse().then(function (users) {
         if (users.length === 0) {
-            return res.redirect(root + '/ghost/signup/');
+            return res.redirect(config.paths().subdir + '/ghost/signup/');
         }
         next();
     }).otherwise(function (err) {
@@ -162,37 +159,39 @@ function redirectToSignup(req, res, next) {
     });
 }
 
-// checkSSL helper
-function redirectSSL(req, res, next) {
-    // Check if X-Forarded-Proto headers are sent, if they are check for https. If they are not assume true to avoid infinite redirect loop.
-    // If the X-Forwarded-Proto header is missing and Express cannot automatically sense HTTPS the redirect will not be made.
-    var httpsHeader = req.header('X-Forwarded-Proto') !== undefined ? req.header('X-Forwarded-Proto').toLowerCase() === 'https' ? true : false : true;
-    if (!req.secure && !httpsHeader) {
-        return res.redirect(301, url.format({
-            protocol: 'https:',
-            hostname: url.parse(config().url).hostname,
-            pathname: req.path,
-            query: req.query
-        }));
+function isSSLrequired(isAdmin) {
+    var forceSSL = url.parse(config().url).protocol === 'https:' ? true : false,
+        forceAdminSSL = (isAdmin && config().forceAdminSSL);
+    if (forceSSL || forceAdminSSL) {
+        return true;
     }
-    next();
+    return false;
 }
 
-// Check to see if we should 
+// Check to see if we should use SSL
+// and redirect if needed
 function checkSSL(req, res, next) {
-    var forceSSL = url.parse(config().url).protocol === 'https:' ? true : false,
-        forceAdminSSL = (res.isAdmin && config().forceAdminSSL);
-
-    if (forceSSL || forceAdminSSL) {
-        return redirectSSL(req, res, next);
+    if (isSSLrequired(res.isAdmin)) {
+        // Check if X-Forarded-Proto headers are sent, if they are check for https.
+        // If they are not assume true to avoid infinite redirect loop.
+        // If the X-Forwarded-Proto header is missing and Express cannot automatically sense HTTPS the redirect will not be made.
+        var httpsHeader = req.header('X-Forwarded-Proto') !== undefined ? req.header('X-Forwarded-Proto').toLowerCase() === 'https' ? true : false : true;
+        if (!req.secure && !httpsHeader) {
+            return res.redirect(301, url.format({
+                protocol: 'https:',
+                hostname: url.parse(config().url).hostname,
+                pathname: req.path,
+                query: req.query
+            }));
+        }
     }
     next();
 }
 
 module.exports = function (server, dbHash) {
-    var oneYear = 31536000000,
-        root = config.paths().webroot,
-        corePath = config.paths().corePath;
+    var subdir = config.paths().subdir,
+        corePath = config.paths().corePath,
+        cookie;
 
     // Cache express server instance
     expressServer = server;
@@ -206,61 +205,74 @@ module.exports = function (server, dbHash) {
     }
 
     // Favicon
-    expressServer.use(root, express.favicon(corePath + '/shared/favicon.ico'));
+    expressServer.use(subdir, express.favicon(corePath + '/shared/favicon.ico'));
 
-    // Shared static config
-    expressServer.use(root + '/shared', express['static'](path.join(corePath, '/shared')));
-
-    expressServer.use(root + '/content/images', storage.get_storage().serve());
-
-    // Serve our built scripts; can't use /scripts here because themes already are
-    expressServer.use(root + '/built/scripts', express['static'](path.join(corePath, '/built/scripts'), {
-        // Put a maxAge of one year on built scripts
-        maxAge: oneYear
-    }));
+    // Static assets
+    // For some reason send divides the max age number by 1000
+    expressServer.use(subdir + '/shared', express['static'](path.join(corePath, '/shared'), {maxAge: ONE_HOUR_MS}));
+    expressServer.use(subdir + '/content/images', storage.get_storage().serve());
+    expressServer.use(subdir + '/ghost/scripts', express['static'](path.join(corePath, '/built/scripts'), {maxAge: ONE_YEAR_MS}));
 
     // First determine whether we're serving admin or theme content
     expressServer.use(manageAdminAndTheme);
 
     // Force SSL
-    server.use(checkSSL);
+    expressServer.use(checkSSL);
+
 
     // Admin only config
-    expressServer.use(root + '/ghost', middleware.whenEnabled('admin', express['static'](path.join(corePath, '/client/assets'))));
+    expressServer.use(subdir + '/ghost', middleware.whenEnabled('admin', express['static'](path.join(corePath, '/client/assets'), {maxAge: ONE_YEAR_MS})));
 
     // Theme only config
-    expressServer.use(middleware.whenEnabled(expressServer.get('activeTheme'), middleware.staticTheme()));
+    expressServer.use(subdir, middleware.whenEnabled(expressServer.get('activeTheme'), middleware.staticTheme()));
 
     // Add in all trailing slashes
-    expressServer.use(slashes());
+    expressServer.use(slashes(true, {headers: {'Cache-Control': 'public, max-age=' + ONE_YEAR_S}}));
 
+    // Body parsing
     expressServer.use(express.json());
     expressServer.use(express.urlencoded());
 
-    expressServer.use(root + '/ghost/upload/', express.multipart());
-    expressServer.use(root + '/ghost/upload/', express.multipart({uploadDir: __dirname + '/content/images'}));
-    expressServer.use(root + '/ghost/api/v0.1/db/', express.multipart());
+    // ### Sessions
+    cookie = {
+        path: subdir + '/ghost',
+        maxAge: 12 * ONE_HOUR_MS
+    };
 
-    // Session handling
+    // if SSL is forced, add secure flag to cookie
+    // parameter is true, since cookie is used with admin only
+    if (isSSLrequired(true)) {
+        cookie.secure = true;
+    }
+
     expressServer.use(express.cookieParser());
     expressServer.use(express.session({
         store: new BSStore(models),
+        proxy: true,
         secret: dbHash,
-        cookie: { path: root + '/ghost', maxAge: 12 * 60 * 60 * 1000 }
+        cookie: cookie
     }));
+
 
     //enable express csrf protection
     expressServer.use(middleware.conditionalCSRF);
+
+
     // local data
     expressServer.use(ghostLocals);
-    // So on every request we actually clean out reduntant passive notifications from the server side
+    // So on every request we actually clean out redundant passive notifications from the server side
     expressServer.use(middleware.cleanNotifications);
-
      // Initialise the views
     expressServer.use(initViews);
 
-    // process the application routes
-    expressServer.use(root, expressServer.router);
+
+    // ### Caching
+    expressServer.use(middleware.cacheControl('public'));
+    expressServer.use('/api/', middleware.cacheControl('private'));
+    expressServer.use('/ghost/', middleware.cacheControl('private'));
+
+    // ### Routing
+    expressServer.use(subdir, expressServer.router);
 
     // ### Error handling
     // 404 Handler

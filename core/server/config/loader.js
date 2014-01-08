@@ -12,15 +12,20 @@ var fs      = require('fs'),
     paths   = require('./paths'),
 
     appRoot = paths().appRoot,
-    configexample = paths().configExample,
-    configFile =  process.env.GHOST_CONFIG || paths().config;
+    configExample = paths().configExample,
+    configFile =  process.env.GHOST_CONFIG || paths().config,
+    rejectMessage = 'Unable to load config';
+
+function readConfigFile(envVal) {
+    return require(configFile)[envVal];
+}
 
 function writeConfigFile() {
     var written = when.defer();
 
     /* Check for config file and copy from config.example.js
         if one doesn't exist. After that, start the server. */
-    fs.exists(configexample, function checkTemplate(templateExists) {
+    fs.exists(configExample, function checkTemplate(templateExists) {
         var read,
             write;
 
@@ -29,7 +34,7 @@ function writeConfigFile() {
         }
 
         // Copy config.example.js => config.js
-        read = fs.createReadStream(configexample);
+        read = fs.createReadStream(configExample);
         read.on('error', function (err) {
             /*jslint unparam:true*/
             return errors.logError(new Error('Could not open config.example.js for read.'), appRoot, 'Please check your deployment for config.js or config.example.js.');
@@ -49,14 +54,14 @@ function writeConfigFile() {
 }
 
 function validateConfigEnvironment() {
-    var envVal = process.env.NODE_ENV || 'undefined',
+    var envVal = process.env.NODE_ENV || undefined,
         hasHostAndPort,
         hasSocket,
         config,
         parsedUrl;
 
     try {
-        config = require(configFile)[envVal];
+        config = readConfigFile(envVal);
     } catch (ignore) {
 
     }
@@ -65,20 +70,25 @@ function validateConfigEnvironment() {
     if (!config) {
         errors.logError(new Error('Cannot find the configuration for the current NODE_ENV'), "NODE_ENV=" + envVal,
             'Ensure your config.js has a section for the current NODE_ENV value and is formatted properly.');
-        return when.reject();
+        return when.reject(rejectMessage);
     }
 
     // Check that our url is valid
     parsedUrl = url.parse(config.url || 'invalid', false, true);
     if (!parsedUrl.host) {
         errors.logError(new Error('Your site url in config.js is invalid.'), config.url, 'Please make sure this is a valid url before restarting');
-        return when.reject();
+        return when.reject(rejectMessage);
+    }
+
+    if (/\/ghost(\/|$)/.test(parsedUrl.pathname)) {
+        errors.logError(new Error('Your site url in config.js cannot contain a subdirectory called ghost.'), config.url, 'Please rename the subdirectory before restarting');
+        return when.reject(rejectMessage);
     }
 
     // Check that we have database values
-    if (!config.database) {
+    if (!config.database || !config.database.client) {
         errors.logError(new Error('Your database configuration in config.js is invalid.'), JSON.stringify(config.database), 'Please make sure this is a valid Bookshelf database configuration');
-        return when.reject();
+        return when.reject(rejectMessage);
     }
 
     hasHostAndPort = config.server && !!config.server.host && !!config.server.port;
@@ -87,7 +97,7 @@ function validateConfigEnvironment() {
     // Check for valid server host and port values
     if (!config.server || !(hasHostAndPort || hasSocket)) {
         errors.logError(new Error('Your server values (socket, or host and port) in config.js are invalid.'), JSON.stringify(config.server), 'Please provide them before restarting.');
-        return when.reject();
+        return when.reject(rejectMessage);
     }
 
     return when.resolve(config);

@@ -6,6 +6,7 @@ var config        = require('../config'),
     mailer        = require('../mail'),
     errors        = require('../errorHandling'),
     storage       = require('../storage'),
+    updateCheck   = require('../update-check'),
 
     adminNavbar,
     adminControllers,
@@ -72,25 +73,30 @@ adminControllers = {
     },
     'auth': function (req, res) {
         var currentTime = process.hrtime()[0],
+            remoteAddress = req.connection.remoteAddress,
             denied = '';
         loginSecurity = _.filter(loginSecurity, function (ipTime) {
             return (ipTime.time + 2 > currentTime);
         });
         denied = _.find(loginSecurity, function (ipTime) {
-            return (ipTime.ip === req.connection.remoteAddress);
+            return (ipTime.ip === remoteAddress);
         });
 
         if (!denied) {
-            loginSecurity.push({ip: req.connection.remoteAddress, time: process.hrtime()[0]});
+            loginSecurity.push({ip: remoteAddress, time: currentTime});
             api.users.check({email: req.body.email, pw: req.body.password}).then(function (user) {
                 req.session.regenerate(function (err) {
                     if (!err) {
                         req.session.user = user.id;
-                        var redirect = config.paths().webroot + '/ghost/';
+                        var redirect = config.paths().subdir + '/ghost/';
                         if (req.body.redirect) {
                             redirect += decodeURIComponent(req.body.redirect);
                         }
-
+                        // If this IP address successfully logins we
+                        // can remove it from the array of failed login attempts.
+                        loginSecurity = _.reject(loginSecurity, function (ipTime) {
+                            return ipTime.ip === remoteAddress;
+                        });
                         res.json(200, {redirect: redirect});
                     }
                 });
@@ -132,12 +138,29 @@ adminControllers = {
             password: password
         }).then(function (user) {
             api.settings.edit('email', email).then(function () {
+                var message = {
+                    to: email,
+                    subject: 'Your New Ghost Blog',
+                    html: '<p><strong>Hello!</strong></p>' +
+                          '<p>Good news! You\'ve successfully created a brand new Ghost blog over on ' + config().url + '</p>' +
+                          '<p>You can log in to your admin account with the following details:</p>' +
+                          '<p> Email Address: ' + email + '<br>' +
+                          'Password: The password you chose when you signed up</p>' +
+                          '<p>Keep this email somewhere safe for future reference, and have fun!</p>' +
+                          '<p>xoxo</p>' +
+                          '<p>Team Ghost<br>' +
+                          '<a href="https://ghost.org">https://ghost.org</a></p>'
+                };
+                mailer.send(message).otherwise(function (error) {
+                    errors.logError('Unable to send welcome email. Reason: \n' + error.message);
+                });
+
                 req.session.regenerate(function (err) {
                     if (!err) {
                         if (req.session.user === undefined) {
                             req.session.user = user.id;
                         }
-                        res.json(200, {redirect: config.paths().webroot + '/ghost/'});
+                        res.json(200, {redirect: config.paths().subdir + '/ghost/'});
                     }
                 });
             });
@@ -179,7 +202,7 @@ adminControllers = {
             };
 
             return api.notifications.add(notification).then(function () {
-                res.json(200, {redirect: config.paths().webroot + '/ghost/signin/'});
+                res.json(200, {redirect: config.paths().subdir + '/ghost/signin/'});
             });
 
         }, function failure(error) {
@@ -215,7 +238,7 @@ adminControllers = {
             errors.logError(err, 'admin.js', "Please check the provided token for validity and expiration.");
 
             return api.notifications.add(notification).then(function () {
-                res.redirect(config.paths().webroot + '/ghost/forgotten');
+                res.redirect(config.paths().subdir + '/ghost/forgotten');
             });
         });
     },
@@ -233,7 +256,7 @@ adminControllers = {
             };
 
             return api.notifications.add(notification).then(function () {
-                res.json(200, {redirect: config.paths().webroot + '/ghost/signin/'});
+                res.json(200, {redirect: config.paths().subdir + '/ghost/signin/'});
             });
         }).otherwise(function (err) {
             // TODO: Better error message if we can tell whether the passwords didn't match or something
@@ -251,15 +274,23 @@ adminControllers = {
             };
 
         return api.notifications.add(notification).then(function () {
-            res.redirect(config.paths().webroot + '/ghost/signin/');
+            res.redirect(config.paths().subdir + '/ghost/signin/');
         });
     },
     'index': function (req, res) {
         /*jslint unparam:true*/
-        res.render('content', {
-            bodyClass: 'manage',
-            adminNav: setSelected(adminNavbar, 'content')
-        });
+        function renderIndex() {
+            res.render('content', {
+                bodyClass: 'manage',
+                adminNav: setSelected(adminNavbar, 'content')
+            });
+        }
+
+        when.join(
+            updateCheck(res),
+            when(renderIndex())
+        // an error here should just get logged
+        ).otherwise(errors.logError);
     },
     'editor': function (req, res) {
         if (req.params.id !== undefined) {

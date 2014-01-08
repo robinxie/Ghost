@@ -1,20 +1,22 @@
-var _               = require('underscore'),
-    moment          = require('moment'),
-    downsize        = require('downsize'),
-    path            = require('path'),
-    when            = require('when'),
+var downsize        = require('downsize'),
     hbs             = require('express-hbs'),
+    moment          = require('moment'),
+    path            = require('path'),
     polyglot        = require('node-polyglot').instance,
-    template        = require('./template'),
-    errors          = require('../errorHandling'),
-    models          = require('../models'),
-    filters         = require('../filters'),
-    packageInfo     = require('../../../package.json'),
-    version         = packageInfo.version,
-    scriptTemplate  = _.template("<script src='<%= source %>?v=<%= version %>'></script>"),
-    isProduction    = process.env.NODE_ENV === 'production',
+    _               = require('underscore'),
+    when            = require('when'),
+
     api             = require('../api'),
     config          = require('../config'),
+    errors          = require('../errorHandling'),
+    filters         = require('../filters'),
+    template        = require('./template'),
+    schema          = require('../data/schema').checks,
+
+    assetTemplate   = _.template('<%= source %>?v=<%= version %>'),
+    scriptTemplate  = _.template('<script src="<%= source %>?v=<%= version %>"></script>'),
+    isProduction    = process.env.NODE_ENV === 'production',
+
     coreHelpers     = {},
     registerHelpers;
 
@@ -38,6 +40,9 @@ coreHelpers.date = function (context, options) {
             context = this.published_at;
         }
     }
+
+    // ensure that context is undefined, not null, as that can cause errors
+    context = context === null ? undefined : context;
 
     var f = options.hash.format || 'MMM Do, YYYY',
         timeago = options.hash.timeago,
@@ -75,7 +80,7 @@ coreHelpers.encode = function (context, str) {
 //
 coreHelpers.pageUrl = function (context, block) {
     /*jslint unparam:true*/
-    return context === 1 ? '/' : ('/page/' + context + '/');
+    return config.paths().subdir + (context === 1 ? '/' : ('/page/' + context + '/'));
 };
 
 // ### URL helper
@@ -88,34 +93,13 @@ coreHelpers.pageUrl = function (context, block) {
 // i.e. If inside a post context will return post permalink
 // absolute flag outputs absolute URL, else URL is relative
 coreHelpers.url = function (options) {
-    var output = '',
-        self = this,
-        tags = {
-            year: function () { return self.created_at.getFullYear(); },
-            month: function () { return self.created_at.getMonth() + 1; },
-            day: function () { return self.created_at.getDate(); },
-            slug: function () { return self.slug; },
-            id: function () { return self.id; }
-        },
-        path = config.paths().path,
-        isAbsolute = options && options.hash.absolute;
-    return api.settings.read('permalinks').then(function (permalinks) {
-        if (isAbsolute) {
-            output += config().url;
-        }
-        if (path && path !== '/') {
-            output += path;
-        }
-        if (models.isPost(self)) {
-            output += permalinks.value;
-            output = output.replace(/(:[a-z]+)/g, function (match) {
-                if (_.has(tags, match.substr(1))) {
-                    return tags[match.substr(1)]();
-                }
-            });
-        }
-        return output;
-    });
+    var absolute = options && options.hash.absolute;
+
+    if (schema.isPost(this)) {
+        return config.paths.urlForPost(api.settings, this, absolute);
+    }
+
+    return when(config.paths.urlFor(this, absolute));
 };
 
 // ### Asset helper
@@ -123,27 +107,31 @@ coreHelpers.url = function (options) {
 // *Usage example:*
 // `{{asset "css/screen.css"}}`
 // `{{asset "css/screen.css" ghost="true"}}`
-//
 // Returns the path to the specified asset. The ghost
 // flag outputs the asset path for the Ghost admin
 coreHelpers.asset = function (context, options) {
     var output = '',
-        subDir = config.paths().path,
         isAdmin = options && options.hash && options.hash.ghost;
 
-    if (subDir === '/') {
-        output += '/';
-    } else {
-        output += subDir + '/';
-    }
+    output += config.paths().subdir + '/';
 
-    if (isAdmin) {
-        output += 'ghost/';
-    } else {
-        output += 'assets/';
+    if (!context.match(/^favicon\.ico$/) && !context.match(/^shared/)) {
+        if (isAdmin) {
+            output += 'ghost/';
+        } else {
+            output += 'assets/';
+        }
     }
 
     output += context;
+
+    if (!context.match(/^favicon\.ico$/)) {
+        output = assetTemplate({
+            source: output,
+            version: coreHelpers.assetHash
+        });
+    }
+
     return new hbs.handlebars.SafeString(output);
 };
 
@@ -206,7 +194,13 @@ coreHelpers.content = function (options) {
         truncateOptions[key] = parseInt(truncateOptions[key], 10);
     });
 
-    if (truncateOptions.words || truncateOptions.characters) {
+    if (truncateOptions.hasOwnProperty('words') || truncateOptions.hasOwnProperty('characters')) {
+        // Due to weirdness in downsize the 'words' option
+        // must be passed as a string. refer to #1796
+        // TODO: when downsize fixes this quirk remove this hack.
+        if (truncateOptions.hasOwnProperty('words')) {
+            truncateOptions.words = truncateOptions.words.toString();
+        }
         return new hbs.handlebars.SafeString(
             downsize(this.html, truncateOptions)
         );
@@ -266,8 +260,7 @@ coreHelpers.fileStorage = function (context, options) {
 };
 
 coreHelpers.ghostScriptTags = function () {
-    var scriptFiles = [],
-        webroot = config.paths().webroot;
+    var scriptFiles = [];
 
     if (isProduction) {
         scriptFiles.push("ghost.min.js");
@@ -283,8 +276,8 @@ coreHelpers.ghostScriptTags = function () {
 
     scriptFiles = _.map(scriptFiles, function (fileName) {
         return scriptTemplate({
-            source: webroot + '/built/scripts/' + fileName,
-            version: version
+            source: config.paths().subdir + '/ghost/scripts/' + fileName,
+            version: coreHelpers.assetHash
         });
     });
 
@@ -301,9 +294,9 @@ coreHelpers.body_class = function (options) {
         tags = this.post && this.post.tags ? this.post.tags : this.tags || [],
         page = this.post && this.post.page ? this.post.page : this.page || false;
 
-    if (_.isString(this.ghostRoot) && this.ghostRoot.match(/\/page/)) {
+    if (_.isString(this.relativeUrl) && this.relativeUrl.match(/\/page/)) {
         classes.push('archive-template');
-    } else if (!this.ghostRoot || this.ghostRoot === '/' || this.ghostRoot === '') {
+    } else if (!this.relativeUrl || this.relativeUrl === '/' || this.relativeUrl === '') {
         classes.push('home-template');
     } else {
         classes.push('post-template');
@@ -350,8 +343,8 @@ coreHelpers.post_class = function (options) {
 
 coreHelpers.ghost_head = function (options) {
     /*jslint unparam:true*/
-    var blog = config.theme(),
-        root = config.paths().webroot,
+    var self = this,
+        blog = config.theme(),
         head = [],
         majorMinor = /^(\d+\.)?(\d+)/,
         trimmedVersion = this.version;
@@ -360,12 +353,14 @@ coreHelpers.ghost_head = function (options) {
 
     head.push('<meta name="generator" content="Ghost ' + trimmedVersion + '" />');
 
-    head.push('<link rel="alternate" type="application/rss+xml" title="' + _.escape(blog.title)  + '" href="' + root + '/rss/' + '">');
-    if (this.ghostRoot) {
-        head.push('<link rel="canonical" href="' + config().url + this.ghostRoot + '" />');
-    }
+    head.push('<link rel="alternate" type="application/rss+xml" title="'
+        + _.escape(blog.title)  + '" href="' + config.paths.urlFor('rss') + '">');
 
-    return filters.doFilter('ghost_head', head).then(function (head) {
+    return coreHelpers.url.call(self, {hash: {absolute: true}}).then(function (url) {
+        head.push('<link rel="canonical" href="' + url + '" />');
+
+        return filters.doFilter('ghost_head', head);
+    }).then(function (head) {
         var headString = _.reduce(head, function (memo, item) { return memo + '\n' + item; }, '');
         return new hbs.handlebars.SafeString(headString.trim());
     });
@@ -374,7 +369,11 @@ coreHelpers.ghost_head = function (options) {
 coreHelpers.ghost_foot = function (options) {
     /*jslint unparam:true*/
     var foot = [];
-    foot.push('<script src="' + config().url + '/shared/vendor/jquery/jquery.js"></script>');
+
+    foot.push(scriptTemplate({
+        source: config.paths().subdir + '/shared/vendor/jquery/jquery.js',
+        version: coreHelpers.assetHash
+    }));
 
     return filters.doFilter('ghost_foot', foot).then(function (foot) {
         var footString = _.reduce(foot, function (memo, item) { return memo + ' ' + item; }, '');
@@ -386,8 +385,9 @@ coreHelpers.meta_title = function (options) {
     /*jslint unparam:true*/
     var title,
         blog;
-    if (_.isString(this.ghostRoot)) {
-        if (!this.ghostRoot || this.ghostRoot === '/' || this.ghostRoot === '' || this.ghostRoot.match(/\/page/)) {
+
+    if (_.isString(this.relativeUrl)) {
+        if (!this.relativeUrl || this.relativeUrl === '/' || this.relativeUrl === '' || this.relativeUrl.match(/\/page/)) {
             blog = config.theme();
             title = blog.title;
         } else {
@@ -406,8 +406,8 @@ coreHelpers.meta_description = function (options) {
     var description,
         blog;
 
-    if (_.isString(this.ghostRoot)) {
-        if (!this.ghostRoot || this.ghostRoot === '/' || this.ghostRoot === '' || this.ghostRoot.match(/\/page/)) {
+    if (_.isString(this.relativeUrl)) {
+        if (!this.relativeUrl || this.relativeUrl === '/' || this.relativeUrl === '' || this.relativeUrl.match(/\/page/)) {
             blog = config.theme();
             description = blog.description;
         } else {
@@ -550,6 +550,34 @@ coreHelpers.helperMissing = function (arg) {
     errors.logError('Missing helper: "' + arg + '"');
 };
 
+// ## Admin URL helper
+// uses urlFor to generate a URL for either the admin or the frontend.
+coreHelpers.adminUrl = function (options) {
+    var absolute = options && options.hash && options.hash.absolute,
+        // Ghost isn't a named route as currently it violates the must start-and-end with slash rule
+        context = !options || !options.hash || !options.hash.frontend ? {relativeUrl: '/ghost'} : 'home';
+
+    return config.paths.urlFor(context, absolute);
+};
+
+coreHelpers.updateNotification = function () {
+    var output = '';
+
+    if (config().updateCheck === false || !this.currentUser) {
+        return when(output);
+    }
+
+    return api.settings.read('displayUpdateNotification').then(function (display) {
+        if (display && display.value && display.value === 'true') {
+            output = '<div class="notification-success">' +
+                'A new version of Ghost is available! Hot damn. ' +
+                '<a href="http://ghost.org/download">Upgrade now</a></div>';
+        }
+
+        return output;
+    });
+};
+
 // Register an async handlebars helper for a given handlebars instance
 function registerAsyncHelper(hbs, name, fn) {
     hbs.registerAsyncHelper(name, function (options, cb) {
@@ -562,7 +590,6 @@ function registerAsyncHelper(hbs, name, fn) {
         });
     });
 }
-
 
 // Register a handlebars helper for themes
 function registerThemeHelper(name, fn) {
@@ -585,11 +612,13 @@ function registerAsyncAdminHelper(name, fn) {
 }
 
 
-
-registerHelpers = function (adminHbs) {
+registerHelpers = function (adminHbs, assetHash) {
 
     // Expose hbs instance for admin
     coreHelpers.adminHbs = adminHbs;
+
+    // Store hash for assets
+    coreHelpers.assetHash = assetHash;
 
 
     // Register theme helpers
@@ -637,8 +666,9 @@ registerHelpers = function (adminHbs) {
 
     registerAdminHelper('fileStorage', coreHelpers.fileStorage);
 
-    registerAsyncAdminHelper('url', coreHelpers.url);
+    registerAdminHelper('adminUrl', coreHelpers.adminUrl);
 
+    registerAsyncAdminHelper('updateNotification', coreHelpers.updateNotification);
 };
 
 module.exports = coreHelpers;

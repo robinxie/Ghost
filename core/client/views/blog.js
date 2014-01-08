@@ -94,8 +94,7 @@
                 data: {
                     status: 'all',
                     page: (self.collection.currentPage + 1),
-                    where: { page: 'all' },
-                    orderBy: ['updated_at', 'DESC']
+                    staticPages: 'all'
                 }
             }).then(function onSuccess(response) {
                 /*jslint unparam:true*/
@@ -138,7 +137,7 @@
 
         initialize: function () {
             this.listenTo(Backbone, 'blog:activeItem', this.checkActive);
-            this.listenTo(this.model, 'change:page', this.render);
+            this.listenTo(this.model, 'change:page change:featured', this.render);
             this.listenTo(this.model, 'destroy', this.removeItem);
         },
 
@@ -214,7 +213,7 @@
             e.preventDefault();
             // for now this will disable "open in new tab", but when we have a Router implemented
             // it can go back to being a normal link to '#/ghost/editor/X'
-            window.location = Ghost.paths.ghostRoot + '/ghost/editor/' + this.model.get('id') + '/';
+            window.location = Ghost.paths.subdir + '/ghost/editor/' + this.model.get('id') + '/';
         },
 
         toggleFeatured: function (e) {

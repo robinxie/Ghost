@@ -58,12 +58,24 @@ ghostBookshelf.Model = ghostBookshelf.Model.extend({
         return attrs;
     },
 
+    // Convert bools to ints to be consistent
+    // across db providers
+    fixBools: function (attrs) {
+        _.each(attrs, function (value, key) {
+            if (typeof value === "boolean") {
+                attrs[key] = value ? 1 : 0;
+            }
+        });
+
+        return attrs;
+    },
+
     format: function (attrs) {
-        return this.fixDates(attrs);
+        return this.fixBools(this.fixDates(attrs));
     },
 
     toJSON: function (options) {
-        var attrs = this.fixDates(_.extend({}, this.attributes)),
+        var attrs = this.fixBools(this.fixDates(_.extend({}, this.attributes))),
             relations = this.relations;
 
         if (options && options.shallow) {
@@ -81,6 +93,88 @@ ghostBookshelf.Model = ghostBookshelf.Model.extend({
 
     sanitize: function (attr) {
         return sanitize(this.get(attr)).xss();
+    }
+
+}, {
+
+    /**
+     * Naive find all
+     * @param options (optional)
+     */
+    findAll:  function (options) {
+        options = options || {};
+        return ghostBookshelf.Collection.forge([], {model: this}).fetch(options);
+    },
+
+    browse: function () {
+        return this.findAll.apply(this, arguments);
+    },
+
+    /**
+     * Naive find one where args match
+     * @param args
+     * @param options (optional)
+     */
+    findOne: function (args, options) {
+        options = options || {};
+        return this.forge(args).fetch(options);
+    },
+
+    read: function () {
+        return this.findOne.apply(this, arguments);
+    },
+
+    /**
+     * Naive edit
+     * @param editedObj
+     * @param options (optional)
+     */
+    edit: function (editedObj, options) {
+        options = options || {};
+        return this.forge({id: editedObj.id}).fetch(options).then(function (foundObj) {
+            return foundObj.save(editedObj, options);
+        });
+    },
+
+    update: function () {
+        return this.edit.apply(this, arguments);
+    },
+
+    /**
+     * Naive create
+     * @param newObj
+     * @param options (optional)
+     */
+    add: function (newObj, options) {
+        options = options || {};
+        var instance = this.forge(newObj);
+        // We allow you to disable timestamps
+        // when importing posts so that
+        // the new posts `updated_at` value
+        // is the same as the import json blob.
+        // More details refer to https://github.com/TryGhost/Ghost/issues/1696
+        if (options.importing) {
+            instance.hasTimestamps = false;
+        }
+        return instance.save(null, options);
+    },
+
+    create: function () {
+        return this.add.apply(this, arguments);
+    },
+
+    /**
+     * Naive destroy
+     * @param _identifier
+     * @param options (optional)
+     */
+    destroy: function (_identifier, options) {
+        options = options || {};
+        return this.forge({id: _identifier}).destroy(options);
+    },
+
+    'delete': function () {
+        return this.destroy.apply(this, arguments);
     },
 
     // #### generateSlug
@@ -142,79 +236,6 @@ ghostBookshelf.Model = ghostBookshelf.Model.extend({
         }
         // Test for duplicate slugs.
         return checkIfSlugExists(slug);
-    }
-
-}, {
-
-    /**
-     * Naive find all
-     * @param options (optional)
-     */
-    findAll:  function (options) {
-        options = options || {};
-        return ghostBookshelf.Collection.forge([], {model: this}).fetch(options);
-    },
-
-    browse: function () {
-        return this.findAll.apply(this, arguments);
-    },
-
-    /**
-     * Naive find one where args match
-     * @param args
-     * @param options (optional)
-     */
-    findOne: function (args, options) {
-        options = options || {};
-        return this.forge(args).fetch(options);
-    },
-
-    read: function () {
-        return this.findOne.apply(this, arguments);
-    },
-
-    /**
-     * Naive edit
-     * @param editedObj
-     * @param options (optional)
-     */
-    edit: function (editedObj, options) {
-        options = options || {};
-        return this.forge({id: editedObj.id}).fetch(options).then(function (foundObj) {
-            return foundObj.save(editedObj, options);
-        });
-    },
-
-    update: function () {
-        return this.edit.apply(this, arguments);
-    },
-
-    /**
-     * Naive create
-     * @param newObj
-     * @param options (optional)
-     */
-    add: function (newObj, options) {
-        options = options || {};
-        return this.forge(newObj).save(null, options);
-    },
-
-    create: function () {
-        return this.add.apply(this, arguments);
-    },
-
-    /**
-     * Naive destroy
-     * @param _identifier
-     * @param options (optional)
-     */
-    destroy: function (_identifier, options) {
-        options = options || {};
-        return this.forge({id: _identifier}).destroy(options);
-    },
-
-    'delete': function () {
-        return this.destroy.apply(this, arguments);
     }
 
 });

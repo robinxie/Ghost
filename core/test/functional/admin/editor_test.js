@@ -1,5 +1,7 @@
 /*globals casper, __utils__, url, testPost */
 
+var escapedUrl = url.replace(/[\-\[\]\/\{\}\(\)\*\+\?\.\\\^\$\|]/g, "\\$&");
+
 CasperTest.begin("Ghost editor is correct", 10, function suite(test) {
     casper.thenOpen(url + "ghost/editor/", function testTitleAndUrl() {
         test.assertTitle("Ghost Admin", "Ghost admin has no title");
@@ -31,8 +33,8 @@ CasperTest.begin("Ghost editor is correct", 10, function suite(test) {
 
     casper.thenClick('.js-publish-button');
 
-    casper.waitForResource(/posts/, function checkPostWasCreated() {
-        var urlRegExp = new RegExp("^" + url + "ghost\/editor\/[0-9]*");
+    casper.waitForResource(/\/posts\/$/, function checkPostWasCreated() {
+        var urlRegExp = new RegExp("^" + escapedUrl + "ghost\/editor\/[0-9]*");
         test.assertUrlMatch(urlRegExp, 'got an id on our URL');
         test.assertExists('.notification-success', 'got success notification');
         test.assertEvalEquals(function () {
@@ -162,8 +164,8 @@ CasperTest.begin('Publish menu - existing post', 22, function suite(test) {
     // Create a post in draft status
     casper.thenClick('.js-publish-button');
 
-    casper.waitForResource(/posts/, function checkPostWasCreated() {
-        var urlRegExp = new RegExp("^" + url + "ghost\/editor\/[0-9]*");
+    casper.waitForResource(/posts\/$/, function checkPostWasCreated() {
+        var urlRegExp = new RegExp("^" + escapedUrl + "ghost\/editor\/[0-9]*");
         test.assertUrlMatch(urlRegExp, 'got an id on our URL');
     });
 
@@ -199,8 +201,8 @@ CasperTest.begin('Publish menu - existing post', 22, function suite(test) {
     // Publish the post
     casper.thenClick('.js-publish-button');
 
-    casper.waitForResource(/posts/, function checkPostWasCreated() {
-        var urlRegExp = new RegExp("^" + url + "ghost\/editor\/[0-9]*");
+    casper.waitForResource(/posts\/$/, function checkPostWasCreated() {
+        var urlRegExp = new RegExp("^" + escapedUrl + "ghost\/editor\/[0-9]*");
         test.assertUrlMatch(urlRegExp, 'got an id on our URL');
     });
 

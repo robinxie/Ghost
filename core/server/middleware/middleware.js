@@ -4,10 +4,13 @@
 
 var _           = require('underscore'),
     express     = require('express'),
+    busboy      = require('./ghost-busboy'),
     config      = require('../config'),
     path        = require('path'),
     api         = require('../api'),
-    expressServer;
+
+    expressServer,
+    ONE_HOUR_MS = 60 * 60 * 1000;
 
 function isBlackListedFileType(file) {
     var blackListedFileTypes = ['.hbs', '.md', '.json'],
@@ -44,7 +47,7 @@ var middleware = {
                     }
                     redirect = '?r=' + encodeURIComponent(reqPath);
                 }
-                return res.redirect(config.paths().webroot + '/ghost/signin/' + redirect);
+                return res.redirect(config.paths().subdir + '/ghost/signin/' + redirect);
             });
         }
         next();
@@ -66,7 +69,7 @@ var middleware = {
     // Login and signup forms in particular
     redirectToDashboard: function (req, res, next) {
         if (req.session.user) {
-            return res.redirect(config.paths().webroot + '/ghost/');
+            return res.redirect(config.paths().subdir + '/ghost/');
         }
 
         next();
@@ -88,16 +91,26 @@ var middleware = {
         });
     },
 
-    // ### DisableCachedResult Middleware
-    // Disable any caching until it can be done properly
-    disableCachedResult: function (req, res, next) {
+    // ### CacheControl Middleware
+    // provide sensible cache control headers
+    cacheControl: function (options) {
         /*jslint unparam:true*/
-        res.set({
-            'Cache-Control': 'no-cache, must-revalidate',
-            'Expires': 'Sat, 26 Jul 1997 05:00:00 GMT'
-        });
+        var profiles = {
+                'public': 'public, max-age=0',
+                'private': 'no-cache, private, no-store, must-revalidate, max-stale=0, post-check=0, pre-check=0'
+            },
+            output;
 
-        next();
+        if (_.isString(options) && profiles.hasOwnProperty(options)) {
+            output = profiles[options];
+        }
+
+        return function cacheControlHeaders(req, res, next) {
+            if (output) {
+                res.set({'Cache-Control': output});
+            }
+            next();
+        };
     },
 
     // ### whenEnabled Middleware
@@ -127,7 +140,8 @@ var middleware = {
     // to allow unit testing
     forwardToExpressStatic: function (req, res, next) {
         api.settings.read('activeTheme').then(function (activeTheme) {
-            express['static'](path.join(config.paths().themePath, activeTheme.value))(req, res, next);
+            // For some reason send divides the max age number by 1000
+            express['static'](path.join(config.paths().themePath, activeTheme.value), {maxAge: ONE_HOUR_MS})(req, res, next);
         });
     },
 
@@ -139,7 +153,9 @@ var middleware = {
             return;
         }
         next();
-    }
+    },
+
+    busboy: busboy
 };
 
 module.exports = middleware;
