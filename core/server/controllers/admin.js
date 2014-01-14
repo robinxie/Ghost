@@ -60,7 +60,8 @@ adminControllers = {
                 return res.send(url);
             })
             .otherwise(function (e) {
-                return errors.logError(e);
+                errors.logError(e);
+                return res.send(500, e.message);
             });
     },
     'login': function (req, res) {
@@ -152,7 +153,11 @@ adminControllers = {
                           '<a href="https://ghost.org">https://ghost.org</a></p>'
                 };
                 mailer.send(message).otherwise(function (error) {
-                    errors.logError('Unable to send welcome email. Reason: \n' + error.message);
+                    errors.logError(
+                        error.message,
+                        "Unable to send welcome email, your blog will continue to function.",
+                        "Please see http://docs.ghost.org/mail/ for instructions on configuring email."
+                    );
                 });
 
                 req.session.regenerate(function (err) {
