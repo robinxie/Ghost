@@ -68,3 +68,6 @@ coverage.html
 /.idea
 
 /content/themes/.DS_Store
+
+/content/themes/ghostium
+/.gitmodules
